@@ -5,6 +5,7 @@ import os
 import random
 from io import BytesIO
 from typing import List, Tuple
+import re
 
 import requests
 from PIL import Image
@@ -22,6 +23,13 @@ from legrad import LeWrapper
 
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
+
+
+def sanitize(name: str) -> str:
+    s = name.strip().lower()
+    s = re.sub(r'[^a-z0-9]+', '_', s)
+    s = re.sub(r'_+', '_', s).strip('_')
+    return s or 'x'
 
 
 def pil_to_tensor_no_numpy(img: Image.Image) -> torch.Tensor:
@@ -206,6 +214,8 @@ def main():
     parser.add_argument('--model_name', type=str, default='ViT-B-16')
     parser.add_argument('--pretrained', type=str, default='laion2b_s34b_b88k')
     parser.add_argument('--output_dir', type=str, default='outputs')
+    parser.add_argument('--prompt_a', type=str, default='a photo of a bird.', help='First prompt (scenario A)')
+    parser.add_argument('--prompt_b', type=str, default='a photo of a human.', help='Second prompt (scenario B)')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -219,7 +229,7 @@ def main():
     model = LeWrapper(model, layer_index=0)
 
     # Prepare text embeddings for two prompts
-    prompts = ['a photo of a cat.', 'a photo of a dog.']
+    prompts = [args.prompt_a, args.prompt_b]
     tok = tokenizer(prompts).to(device)
     text_emb_all = model.encode_text(tok, normalize=True)  # [2, dim]
 
@@ -257,6 +267,9 @@ def main():
     num_layers = int(cat_match.numel())
     layers = list(range(num_layers))
 
+    san_pa = sanitize(args.prompt_a)
+    san_pb = sanitize(args.prompt_b)
+
     # Convert to python lists
     cat_match_l = [float(v) for v in cat_match]
     cat_mismatch_l = [float(v) for v in cat_mismatch]
@@ -265,45 +278,45 @@ def main():
 
     # Plots
     plot_layer_activations(layers, cat_match_l, cat_mismatch_l,
-                           label_a='cat prompt on cat images (match)',
-                           label_b='dog prompt on cat images (mismatch)',
+                           label_a=f'{args.prompt_a} on cat images',
+                           label_b=f'{args.prompt_b} on cat images',
                            title='Per-layer LeGrad activation on Cat images',
-                           out_path=os.path.join(args.output_dir, 'layers_cat_images_cat_vs_dog_prompt.png'))
+                           out_path=os.path.join(args.output_dir, f'layers_cat_images_{san_pa}_vs_{san_pb}.png'))
 
     plot_layer_activations(layers, dog_match_l, dog_mismatch_l,
-                           label_a='dog prompt on dog images (match)',
-                           label_b='cat prompt on dog images (mismatch)',
+                           label_a=f'{args.prompt_a} on dog images',
+                           label_b=f'{args.prompt_b} on dog images',
                            title='Per-layer LeGrad activation on Dog images',
-                           out_path=os.path.join(args.output_dir, 'layers_dog_images_dog_vs_cat_prompt.png'))
+                           out_path=os.path.join(args.output_dir, f'layers_dog_images_{san_pa}_vs_{san_pb}.png'))
 
     # CSVs
     save_csv(layers, cat_match_l, cat_mismatch_l,
-             header_a='cat_prompt_on_cat', header_b='dog_prompt_on_cat',
-             out_csv=os.path.join(args.output_dir, 'layers_cat_images.csv'))
+             header_a=f'{san_pa}_on_cat', header_b=f'{san_pb}_on_cat',
+             out_csv=os.path.join(args.output_dir, f'layers_cat_images_{san_pa}_vs_{san_pb}.csv'))
     save_csv(layers, dog_match_l, dog_mismatch_l,
-             header_a='dog_prompt_on_dog', header_b='cat_prompt_on_dog',
-             out_csv=os.path.join(args.output_dir, 'layers_dog_images.csv'))
+             header_a=f'{san_pa}_on_dog', header_b=f'{san_pb}_on_dog',
+             out_csv=os.path.join(args.output_dir, f'layers_dog_images_{san_pa}_vs_{san_pb}.csv'))
 
     # Per-head heatmaps and CSVs
-    plot_layer_head_heatmap(cat_heads_match, 'Heads: cat prompt on cat images (match)',
-                            os.path.join(args.output_dir, 'heads_cat_images_match.png'))
-    plot_layer_head_heatmap(cat_heads_mismatch, 'Heads: dog prompt on cat images (mismatch)',
-                            os.path.join(args.output_dir, 'heads_cat_images_mismatch.png'))
-    plot_layer_head_heatmap(cat_heads_mismatch - cat_heads_match, 'Heads: (mismatch - match) on cat images',
-                            os.path.join(args.output_dir, 'heads_cat_images_diff.png'))
-    save_head_csv(cat_heads_match, os.path.join(args.output_dir, 'heads_cat_images_match.csv'))
-    save_head_csv(cat_heads_mismatch, os.path.join(args.output_dir, 'heads_cat_images_mismatch.csv'))
-    save_head_csv(cat_heads_mismatch - cat_heads_match, os.path.join(args.output_dir, 'heads_cat_images_diff.csv'))
+    plot_layer_head_heatmap(cat_heads_match, f'Heads: {args.prompt_a} on cat images',
+                            os.path.join(args.output_dir, f'heads_cat_images_{san_pa}.png'))
+    plot_layer_head_heatmap(cat_heads_mismatch, f'Heads: {args.prompt_b} on cat images',
+                            os.path.join(args.output_dir, f'heads_cat_images_{san_pb}.png'))
+    plot_layer_head_heatmap(cat_heads_mismatch - cat_heads_match, f'Heads: ({args.prompt_b} - {args.prompt_a}) on cat images',
+                            os.path.join(args.output_dir, f'heads_cat_images_diff_{san_pb}_minus_{san_pa}.png'))
+    save_head_csv(cat_heads_match, os.path.join(args.output_dir, f'heads_cat_images_{san_pa}.csv'))
+    save_head_csv(cat_heads_mismatch, os.path.join(args.output_dir, f'heads_cat_images_{san_pb}.csv'))
+    save_head_csv(cat_heads_mismatch - cat_heads_match, os.path.join(args.output_dir, f'heads_cat_images_diff_{san_pb}_minus_{san_pa}.csv'))
 
-    plot_layer_head_heatmap(dog_heads_match, 'Heads: dog prompt on dog images (match)',
-                            os.path.join(args.output_dir, 'heads_dog_images_match.png'))
-    plot_layer_head_heatmap(dog_heads_mismatch, 'Heads: cat prompt on dog images (mismatch)',
-                            os.path.join(args.output_dir, 'heads_dog_images_mismatch.png'))
-    plot_layer_head_heatmap(dog_heads_mismatch - dog_heads_match, 'Heads: (mismatch - match) on dog images',
-                            os.path.join(args.output_dir, 'heads_dog_images_diff.png'))
-    save_head_csv(dog_heads_match, os.path.join(args.output_dir, 'heads_dog_images_match.csv'))
-    save_head_csv(dog_heads_mismatch, os.path.join(args.output_dir, 'heads_dog_images_mismatch.csv'))
-    save_head_csv(dog_heads_mismatch - dog_heads_match, os.path.join(args.output_dir, 'heads_dog_images_diff.csv'))
+    plot_layer_head_heatmap(dog_heads_match, f'Heads: {args.prompt_a} on dog images',
+                            os.path.join(args.output_dir, f'heads_dog_images_{san_pa}.png'))
+    plot_layer_head_heatmap(dog_heads_mismatch, f'Heads: {args.prompt_b} on dog images',
+                            os.path.join(args.output_dir, f'heads_dog_images_{san_pb}.png'))
+    plot_layer_head_heatmap(dog_heads_mismatch - dog_heads_match, f'Heads: ({args.prompt_b} - {args.prompt_a}) on dog images',
+                            os.path.join(args.output_dir, f'heads_dog_images_diff_{san_pb}_minus_{san_pa}.png'))
+    save_head_csv(dog_heads_match, os.path.join(args.output_dir, f'heads_dog_images_{san_pa}.csv'))
+    save_head_csv(dog_heads_mismatch, os.path.join(args.output_dir, f'heads_dog_images_{san_pb}.csv'))
+    save_head_csv(dog_heads_mismatch - dog_heads_match, os.path.join(args.output_dir, f'heads_dog_images_diff_{san_pb}_minus_{san_pa}.csv'))
 
     print('Saved plots and CSVs in:', args.output_dir)
 
