@@ -70,14 +70,17 @@ def compute_standard_and_weighted_maps_clip(
 	text_embedding: torch.Tensor,
 	focus_layer_index: int = 10,
 	focus_head_index: int = 10,
+	focus_weight: float = 0.5,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
 	"""
 	Returns:
 	- standard_map: [1, P, H, W] standard LeGrad (average over layers and heads)
-	- weighted_map: [1, P, H, W] custom weighting with 50% from (focus_layer_index, focus_head_index)
+	- weighted_map: [1, P, H, W] custom weighting with `focus_weight` from (focus_layer_index, focus_head_index)
 	"""
 	assert text_embedding.ndim == 2
 	num_prompts = text_embedding.shape[0]
+	# Clamp weight to [0,1]
+	focus_weight = float(max(0.0, min(1.0, focus_weight)))
 
 	# Replicate image for prompts, populate hooks/features
 	if image is not None:
@@ -152,7 +155,7 @@ def compute_standard_and_weighted_maps_clip(
 	else:
 		num_pairs = float(total_layers * num_heads)
 		rest_mean = (sum_all_pairs - target_map) / max(1.0, (num_pairs - 1.0))
-		weighted = 0.5 * target_map + 0.5 * rest_mean
+		weighted = focus_weight * target_map + (1.0 - focus_weight) * rest_mean
 		weighted_map = min_max_batch(weighted)
 
 	return standard_map, weighted_map
@@ -181,6 +184,7 @@ def main():
 	parser.add_argument('--seed', type=int, default=42)
 	parser.add_argument('--num_examples', type=int, default=0, help='If >0, save per-image comparison figures for the first N images.')
 	parser.add_argument('--examples_dir', type=str, default='outputs/examples', help='Directory to save per-image comparisons.')
+	parser.add_argument('--focus_weight', type=float, default=0.5, help='Weight for L10-H10 contribution in [0,1].')
 	args = parser.parse_args()
 
 	os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
@@ -230,7 +234,7 @@ def main():
 		for i in range(P):
 			with torch.enable_grad():
 				std_map, wtd_map = compute_standard_and_weighted_maps_clip(
-					model, img_t, text_emb[i:i+1], focus_layer_index=10, focus_head_index=10
+					model, img_t, text_emb[i:i+1], focus_layer_index=10, focus_head_index=10, focus_weight=args.focus_weight
 				)  # each: [1,1,H,W]
 			sum_std_list[i] = std_map if sum_std_list[i] is None else (sum_std_list[i] + std_map)
 			sum_wtd_list[i] = wtd_map if sum_wtd_list[i] is None else (sum_wtd_list[i] + wtd_map)
@@ -248,7 +252,7 @@ def main():
 		std_i = mean_std_list[i][0, 0]
 		wtd_i = mean_wtd_list[i][0, 0]
 		overlay(axes[i][0], base_image_for_overlay, std_i, title=f'{args.prompts[i]} - LeGrad', alpha=0.6)
-		overlay(axes[i][1], base_image_for_overlay, wtd_i, title=f'{args.prompts[i]} - Weighted (50% L10-H10)', alpha=0.6)
+		overlay(axes[i][1], base_image_for_overlay, wtd_i, title=f'{args.prompts[i]} - Weighted ({int(args.focus_weight*100)}% L10-H10)', alpha=0.6)
 	plt.tight_layout()
 	plt.savefig(args.output_path, dpi=150)
 	plt.close(fig)
@@ -269,7 +273,7 @@ def main():
 			for i in range(P):
 				with torch.enable_grad():
 					std_map, wtd_map = compute_standard_and_weighted_maps_clip(
-						model, img_t, text_emb[i:i+1], focus_layer_index=10, focus_head_index=10
+						model, img_t, text_emb[i:i+1], focus_layer_index=10, focus_head_index=10, focus_weight=args.focus_weight
 					)  # each [1,1,H,W]
 				per_prompt_std.append(std_map[0, 0])
 				per_prompt_wtd.append(wtd_map[0, 0])
@@ -278,7 +282,7 @@ def main():
 				axes2 = [axes2]
 			for i in range(P):
 				overlay(axes2[i][0], img, per_prompt_std[i], title=f'{args.prompts[i]} - LeGrad', alpha=0.6)
-				overlay(axes2[i][1], img, per_prompt_wtd[i], title=f'{args.prompts[i]} - Weighted (50% L10-H10)', alpha=0.6)
+				overlay(axes2[i][1], img, per_prompt_wtd[i], title=f'{args.prompts[i]} - Weighted ({int(args.focus_weight*100)}% L10-H10)', alpha=0.6)
 			plt.tight_layout()
 			base = os.path.splitext(os.path.basename(pth))[0]
 			out_img = os.path.join(args.examples_dir, f'{base}_comparison.png')
