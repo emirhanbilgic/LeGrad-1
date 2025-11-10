@@ -230,7 +230,7 @@ def main():
                         help='Select one or more types; default tries original only.')
     parser.add_argument('--wordlist_path', type=str, default='resources/wordlist_neighbors.json',
                         help='Path to JSON mapping from keyword to list of neighbor words for orthogonalization.')
-    parser.add_argument('--topk', type=int, default=64, help='k for hard masking.')
+    parser.add_argument('--topk', type=int, default=100, help='k for hard masking.')
     parser.add_argument('--residual_atoms', type=int, default=8, help='Max atoms for OMP residual.')
     parser.add_argument('--output_dir', type=str, default='outputs/sparse_encoding')
     parser.add_argument('--overlay_alpha', type=float, default=0.6)
