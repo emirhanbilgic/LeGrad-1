@@ -299,6 +299,10 @@ def main():
     parser.add_argument('--prompts', type=str, nargs='*',
                         default=['a photo of a dog.', 'a photo of a cat.', 'a photo of a bird.', 'a photo of a human.'],
                         help='List of prompts to evaluate (e.g., 4 prompts: dog, cat, bird, human)')
+    parser.add_argument('--class_a_subdir', type=str, default='Cat', help='Subfolder for class A images (e.g., cavallo)')
+    parser.add_argument('--class_b_subdir', type=str, default='Dog', help='Subfolder for class B images (e.g., elefante)')
+    parser.add_argument('--match_keyword_a', type=str, default='cat', help='Keyword to identify matching prompt for class A (e.g., horse)')
+    parser.add_argument('--match_keyword_b', type=str, default='dog', help='Keyword to identify matching prompt for class B (e.g., elephant)')
     parser.add_argument('--save_layer_grids', type=int, default=0, help='If >0, save per-image per-layer overlay grids for this many images per class')
     parser.add_argument('--grid_cols', type=int, default=0, help='If 0, auto to (num_layers+1) for single-row. Otherwise, fixed columns.')
     parser.add_argument('--overlay_alpha', type=float, default=0.6, help='Overlay alpha for heatmaps')
@@ -319,10 +323,10 @@ def main():
     tok = tokenizer(prompts).to(device)
     text_emb_all = model.encode_text(tok, normalize=True)  # [P, dim]
 
-    cat_dir = os.path.join(args.dataset_root, 'Cat')
-    dog_dir = os.path.join(args.dataset_root, 'Dog')
-    cat_paths = list_images(cat_dir, limit=args.num_per_class, seed=args.seed)
-    dog_paths = list_images(dog_dir, limit=args.num_per_class, seed=args.seed)
+    class_a_dir = os.path.join(args.dataset_root, args.class_a_subdir)
+    class_b_dir = os.path.join(args.dataset_root, args.class_b_subdir)
+    class_a_paths = list_images(class_a_dir, limit=args.num_per_class, seed=args.seed)
+    class_b_paths = list_images(class_b_dir, limit=args.num_per_class, seed=args.seed)
 
     # Utilities to accumulate per-layer activations for multiple prompts
     def process_batch_multi(image_paths: List[str], prompt_indices: List[int]):
@@ -345,10 +349,10 @@ def main():
         return acc_layers, acc_heads
 
     prompt_indices = list(range(len(prompts)))
-    # Cat images: process all prompts
-    cat_layers_dict, cat_heads_dict = process_batch_multi(cat_paths, prompt_indices)
-    # Dog images: process all prompts
-    dog_layers_dict, dog_heads_dict = process_batch_multi(dog_paths, prompt_indices)
+    # Class A images: process all prompts
+    class_a_layers_dict, class_a_heads_dict = process_batch_multi(class_a_paths, prompt_indices)
+    # Class B images: process all prompts
+    class_b_layers_dict, class_b_heads_dict = process_batch_multi(class_b_paths, prompt_indices)
 
     # Determine match prompt per class via keyword heuristic
     def find_match_index(key: str) -> int:
@@ -357,13 +361,12 @@ def main():
             if key in p.lower():
                 return i
         return -1
-
-    cat_match_idx = find_match_index('cat')
-    dog_match_idx = find_match_index('dog')
+    class_a_match_idx = find_match_index(args.match_keyword_a)
+    class_b_match_idx = find_match_index(args.match_keyword_b)
 
     # Use any prompt to infer number of layers
     any_pi = prompt_indices[0]
-    num_layers = int(cat_layers_dict[any_pi].numel())
+    num_layers = int(class_a_layers_dict[any_pi].numel())
     layers = list(range(num_layers))
 
     # Single-line plot helper
@@ -379,55 +382,58 @@ def main():
         plt.savefig(out_path)
         plt.close()
 
-    # Save per-prompt outputs for Cat
-    for pi in prompt_indices:
-        pslug = sanitize(prompts[pi])
-        vals = [float(v) for v in cat_layers_dict[pi]]
-        plot_single_layer(layers, vals, label=f'{prompts[pi]} on cat images',
-                          title='Per-layer LeGrad activation on Cat images',
-                          out_path=os.path.join(args.output_dir, f'layers_cat_images_{pslug}.png'))
-        save_csv(layers, vals, vals, header_a=f'{pslug}_on_cat', header_b=f'{pslug}_on_cat',
-                 out_csv=os.path.join(args.output_dir, f'layers_cat_images_{pslug}.csv'))
-        plot_layer_head_heatmap(cat_heads_dict[pi], f'Heads: {prompts[pi]} on cat images',
-                                os.path.join(args.output_dir, f'heads_cat_images_{pslug}.png'))
-        save_head_csv(cat_heads_dict[pi], os.path.join(args.output_dir, f'heads_cat_images_{pslug}.csv'))
-    # Differences vs cat-match
-    if cat_match_idx >= 0:
-        mslug = sanitize(prompts[cat_match_idx])
-        for pi in prompt_indices:
-            if pi == cat_match_idx:
-                continue
-            pslug = sanitize(prompts[pi])
-            plot_layer_head_heatmap(cat_heads_dict[pi] - cat_heads_dict[cat_match_idx],
-                                    f'Heads: ({prompts[pi]} - {prompts[cat_match_idx]}) on cat images',
-                                    os.path.join(args.output_dir, f'heads_cat_images_diff_{pslug}_minus_{mslug}.png'))
-            save_head_csv(cat_heads_dict[pi] - cat_heads_dict[cat_match_idx],
-                          os.path.join(args.output_dir, f'heads_cat_images_diff_{pslug}_minus_{mslug}.csv'))
+    san_class_a = sanitize(args.class_a_subdir)
+    san_class_b = sanitize(args.class_b_subdir)
 
-    # Save per-prompt outputs for Dog
+    # Save per-prompt outputs for Class A
     for pi in prompt_indices:
         pslug = sanitize(prompts[pi])
-        vals = [float(v) for v in dog_layers_dict[pi]]
-        plot_single_layer(layers, vals, label=f'{prompts[pi]} on dog images',
-                          title='Per-layer LeGrad activation on Dog images',
-                          out_path=os.path.join(args.output_dir, f'layers_dog_images_{pslug}.png'))
-        save_csv(layers, vals, vals, header_a=f'{pslug}_on_dog', header_b=f'{pslug}_on_dog',
-                 out_csv=os.path.join(args.output_dir, f'layers_dog_images_{pslug}.csv'))
-        plot_layer_head_heatmap(dog_heads_dict[pi], f'Heads: {prompts[pi]} on dog images',
-                                os.path.join(args.output_dir, f'heads_dog_images_{pslug}.png'))
-        save_head_csv(dog_heads_dict[pi], os.path.join(args.output_dir, f'heads_dog_images_{pslug}.csv'))
-    # Differences vs dog-match
-    if dog_match_idx >= 0:
-        mslug = sanitize(prompts[dog_match_idx])
+        vals = [float(v) for v in class_a_layers_dict[pi]]
+        plot_single_layer(layers, vals, label=f'{prompts[pi]} on {args.class_a_subdir} images',
+                          title=f'Per-layer LeGrad activation on {args.class_a_subdir} images',
+                          out_path=os.path.join(args.output_dir, f'layers_{san_class_a}_images_{pslug}.png'))
+        save_csv(layers, vals, vals, header_a=f'{pslug}_on_{san_class_a}', header_b=f'{pslug}_on_{san_class_a}',
+                 out_csv=os.path.join(args.output_dir, f'layers_{san_class_a}_images_{pslug}.csv'))
+        plot_layer_head_heatmap(class_a_heads_dict[pi], f'Heads: {prompts[pi]} on {args.class_a_subdir} images',
+                                os.path.join(args.output_dir, f'heads_{san_class_a}_images_{pslug}.png'))
+        save_head_csv(class_a_heads_dict[pi], os.path.join(args.output_dir, f'heads_{san_class_a}_images_{pslug}.csv'))
+    # Differences vs class A match
+    if class_a_match_idx >= 0:
+        mslug = sanitize(prompts[class_a_match_idx])
         for pi in prompt_indices:
-            if pi == dog_match_idx:
+            if pi == class_a_match_idx:
                 continue
             pslug = sanitize(prompts[pi])
-            plot_layer_head_heatmap(dog_heads_dict[pi] - dog_heads_dict[dog_match_idx],
-                                    f'Heads: ({prompts[pi]} - {prompts[dog_match_idx]}) on dog images',
-                                    os.path.join(args.output_dir, f'heads_dog_images_diff_{pslug}_minus_{mslug}.png'))
-            save_head_csv(dog_heads_dict[pi] - dog_heads_dict[dog_match_idx],
-                          os.path.join(args.output_dir, f'heads_dog_images_diff_{pslug}_minus_{mslug}.csv'))
+            plot_layer_head_heatmap(class_a_heads_dict[pi] - class_a_heads_dict[class_a_match_idx],
+                                    f'Heads: ({prompts[pi]} - {prompts[class_a_match_idx]}) on {args.class_a_subdir} images',
+                                    os.path.join(args.output_dir, f'heads_{san_class_a}_images_diff_{pslug}_minus_{mslug}.png'))
+            save_head_csv(class_a_heads_dict[pi] - class_a_heads_dict[class_a_match_idx],
+                          os.path.join(args.output_dir, f'heads_{san_class_a}_images_diff_{pslug}_minus_{mslug}.csv'))
+
+    # Save per-prompt outputs for Class B
+    for pi in prompt_indices:
+        pslug = sanitize(prompts[pi])
+        vals = [float(v) for v in class_b_layers_dict[pi]]
+        plot_single_layer(layers, vals, label=f'{prompts[pi]} on {args.class_b_subdir} images',
+                          title=f'Per-layer LeGrad activation on {args.class_b_subdir} images',
+                          out_path=os.path.join(args.output_dir, f'layers_{san_class_b}_images_{pslug}.png'))
+        save_csv(layers, vals, vals, header_a=f'{pslug}_on_{san_class_b}', header_b=f'{pslug}_on_{san_class_b}',
+                 out_csv=os.path.join(args.output_dir, f'layers_{san_class_b}_images_{pslug}.csv'))
+        plot_layer_head_heatmap(class_b_heads_dict[pi], f'Heads: {prompts[pi]} on {args.class_b_subdir} images',
+                                os.path.join(args.output_dir, f'heads_{san_class_b}_images_{pslug}.png'))
+        save_head_csv(class_b_heads_dict[pi], os.path.join(args.output_dir, f'heads_{san_class_b}_images_{pslug}.csv'))
+    # Differences vs class B match
+    if class_b_match_idx >= 0:
+        mslug = sanitize(prompts[class_b_match_idx])
+        for pi in prompt_indices:
+            if pi == class_b_match_idx:
+                continue
+            pslug = sanitize(prompts[pi])
+            plot_layer_head_heatmap(class_b_heads_dict[pi] - class_b_heads_dict[class_b_match_idx],
+                                    f'Heads: ({prompts[pi]} - {prompts[class_b_match_idx]}) on {args.class_b_subdir} images',
+                                    os.path.join(args.output_dir, f'heads_{san_class_b}_images_diff_{pslug}_minus_{mslug}.png'))
+            save_head_csv(class_b_heads_dict[pi] - class_b_heads_dict[class_b_match_idx],
+                          os.path.join(args.output_dir, f'heads_{san_class_b}_images_diff_{pslug}_minus_{mslug}.csv'))
 
     # Optional: save per-layer grids for a subset of images
     if args.save_layer_grids > 0:
@@ -456,8 +462,8 @@ def main():
                     base_name = os.path.splitext(os.path.basename(pth))[0]
                     out_name = f"{class_tag}_{base_name}_{sanitize(prompt)}_layers_grid.png"
                     grid.save(os.path.join(grids_dir, out_name))
-        save_grids_for_paths(cat_paths, 'cat')
-        save_grids_for_paths(dog_paths, 'dog')
+        save_grids_for_paths(class_a_paths, san_class_a)
+        save_grids_for_paths(class_b_paths, san_class_b)
 
     print('Saved plots and CSVs in:', args.output_dir)
 
