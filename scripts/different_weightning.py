@@ -81,8 +81,7 @@ def compute_standard_and_weighted_maps_clip(
 
 	# Replicate image for prompts, populate hooks/features
 	if image is not None:
-		image_rep = image.repeat(num_prompts, 1, 1, 1)
-		_ = model.encode_image(image_rep)
+		_ = model.encode_image(image)  # no repeat; keep batch=1 for lower memory
 
 	blocks_list = list(dict(model.visual.transformer.resblocks.named_children()).values())
 
@@ -103,7 +102,8 @@ def compute_standard_and_weighted_maps_clip(
 	# We need head count to clamp focus head
 	# Do a quick forward access to attn maps to know head count at the first layer
 	first_attn = blocks_list[model.starting_depth].attn.attention_maps  # [(b*h), N, N]
-	num_heads = first_attn.shape[0] // num_prompts
+	# since we kept batch=1, head count equals first_attn.shape[0]
+	num_heads = first_attn.shape[0]
 	focus_head_index = max(0, min(num_heads - 1, focus_head_index))
 
 	# Accumulators
@@ -117,15 +117,16 @@ def compute_standard_and_weighted_maps_clip(
 		one_hot = torch.sum(sim)  # scalar objective across prompts
 
 		attn_map = blocks_list[model.starting_depth + layer].attn.attention_maps  # [(b*h), N, N]
-		grad = torch.autograd.grad(one_hot, [attn_map], retain_graph=True, create_graph=True)[0]
-		grad = rearrange(grad, '(b h) n m -> b h n m', b=num_prompts)  # [P, H, N, N]
+		grad = torch.autograd.grad(one_hot, [attn_map], retain_graph=True, create_graph=False)[0]
+		# batch is 1 here
+		grad = rearrange(grad, '(b h) n m -> b h n m', b=1)  # [1, H, N, N]
 		grad = torch.clamp(grad, min=0.)
 
 		# Average over queries, drop CLS on key dim
-		head_token_relevance = grad.mean(dim=2)[:, :, 1:]  # [P, H, N-1]
+		head_token_relevance = grad.mean(dim=2)[:, :, 1:]  # [1, H, N-1]
 
 		# Per-layer mean over heads
-		layer_mean = head_token_relevance.mean(dim=1)  # [P, N-1]
+		layer_mean = head_token_relevance.mean(dim=1)  # [1, N-1]
 		layer_mean_map = rearrange(layer_mean, 'b (ww hh) -> 1 b ww hh', ww=w, hh=h)  # [1, P, w, h]
 		layer_mean_map = F.interpolate(layer_mean_map, scale_factor=model.patch_size, mode='bilinear')  # [1, P, H, W]
 		sum_per_layer_mean = sum_per_layer_mean + layer_mean_map
@@ -136,7 +137,7 @@ def compute_standard_and_weighted_maps_clip(
 
 		# If this is the focus layer, extract the focus head map
 		if layer == focus_layer_index:
-			head_focus = head_token_relevance[:, focus_head_index, :]  # [P, N-1]
+			head_focus = head_token_relevance[:, focus_head_index, :]  # [1, N-1]
 			head_focus_map = rearrange(head_focus, 'b (ww hh) -> 1 b ww hh', ww=w, hh=h)
 			head_focus_map = F.interpolate(head_focus_map, scale_factor=model.patch_size, mode='bilinear')  # [1, P, H, W]
 			target_map = head_focus_map
