@@ -307,7 +307,7 @@ def compute_map_for_embedding(model: LeWrapper, image: torch.Tensor, text_emb_1x
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Sparse text encodings for LeGrad: word-list orthogonalization and hard masking.')
+    parser = argparse.ArgumentParser(description='Sparse text encodings for LeGrad: original and sparse residual modes.')
     parser.add_argument('--dataset_root', type=str, required=True, help='Root with images (expects Cat/ and Dog/ if present).')
     parser.add_argument('--num_per_class', type=int, default=4, help='Images per class to sample (if Cat/Dog exist).')
     parser.add_argument('--image_size', type=int, default=448)
@@ -316,7 +316,7 @@ def main():
     parser.add_argument('--prompts', type=str, nargs='*', default=['a photo of a dog.', 'a photo of a cat.'])
     parser.add_argument('--sparse_encoding_type', type=str, nargs='*',
                         default=['original'],
-                        choices=['original', 'word_list', 'hard', 'sparse_residual'],
+                        choices=['original', 'sparse_residual'],
                         help='Select one or more types; default tries original only.')
     parser.add_argument('--wordlist_source', type=str, default='json',
                         choices=['json', 'url', 'wordnet'],
@@ -325,7 +325,6 @@ def main():
                         help='When --wordlist_source=json, path to JSON mapping from keyword to neighbor list.')
     parser.add_argument('--wordlist_url', type=str, default='',
                         help='When --wordlist_source=url, URL to JSON mapping from keyword to neighbor list.')
-    parser.add_argument('--topk', type=int, default=100, help='k for hard masking.')
     parser.add_argument('--residual_atoms', type=int, default=8, help='Max atoms for OMP residual.')
     parser.add_argument('--wn_use_synonyms', type=int, default=0, help='WordNet: include synonyms (0/1).')
     parser.add_argument('--wn_use_hypernyms', type=int, default=0, help='WordNet: include hypernyms (0/1).')
@@ -424,34 +423,12 @@ def main():
 
         for r, prompt in enumerate(args.prompts):
             original_1x = text_emb_all[r:r+1]  # [1, d]
-            # Build neighbors for this prompt (other prompts + external wordlist)
-            neighbors = []
-            if 'word_list' in types_selected:
-                # other prompts
-                if r > 0:
-                    neighbors.append(text_emb_all[:r])
-                if r + 1 < text_emb_all.shape[0]:
-                    neighbors.append(text_emb_all[r+1:])
-                # external wordlist for keyword extracted from prompt
-                # extract keyword as last alphabetic token
-                tokens = re.findall(r'[a-z]+', prompt.lower())
-                key = tokens[-1] if len(tokens) > 0 else ''
-                wl = external_neighbors_getter(key) if key else []
-                if len(wl) > 0:
-                    ext_emb = build_wordlist_neighbors_embedding(tokenizer, model, wl, device)
-                    if ext_emb is not None and ext_emb.numel() > 0:
-                        neighbors.append(ext_emb)
-            neighbors_t = torch.cat(neighbors, dim=0) if len(neighbors) > 0 else None
 
             maps_for_row: List[Tuple[str, torch.Tensor]] = []
 
             for c, tname in enumerate(types_selected):
                 if tname == 'original':
                     emb_1x = original_1x
-                elif tname == 'word_list':
-                    emb_1x = orthogonalize_against_set(original_1x, neighbors_t)
-                elif tname == 'hard':
-                    emb_1x = topk_sparsify(original_1x, k=args.topk)
                 elif tname == 'sparse_residual':
                     # Build dictionary from other prompts + external neighbors (independent of 'word_list' selection)
                     parts = []
