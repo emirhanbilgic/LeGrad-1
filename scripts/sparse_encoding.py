@@ -271,6 +271,14 @@ def main():
     parser.add_argument('--wn_use_siblings', type=int, default=1, help='WordNet: include co-hyponyms/siblings (0/1).')
     parser.add_argument('--output_dir', type=str, default='outputs/sparse_encoding')
     parser.add_argument('--overlay_alpha', type=float, default=0.6)
+    parser.add_argument('--benchmark', type=int, default=0,
+                        help='Enable benchmark grid over multiple WordNet configs and atom counts (0/1).')
+    parser.add_argument('--atom_grid', type=int, nargs='*', default=[8, 16],
+                        help='Atom counts to test when --benchmark=1.')
+    parser.add_argument('--wn_configs', type=str, nargs='*', default=['siblings', 'siblings+hyponyms'],
+                        help='WordNet configs to test when --benchmark=1. '
+                             'Choices include: siblings, siblings+hyponyms, synonyms, hypernyms, hyponyms, '
+                             'siblings+synonyms.')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -344,9 +352,57 @@ def main():
     if len(paths) == 0:
         raise RuntimeError(f'No images found under {args.dataset_root}')
 
-    # Process each image: build a grid per image with rows=prompts, cols=len(selected types)
+    # Helpers to construct benchmark variants
+    def parse_wn_config_name(name: str) -> Tuple[bool, bool, bool, bool]:
+        n = (name or '').strip().lower()
+        use_synonyms = ('synonym' in n)
+        use_hypernyms = ('hypernym' in n)
+        use_hyponyms = ('hyponym' in n)
+        use_siblings = ('sibling' in n) or (n == 'siblings') or (n == 'cohyponyms') or (n == 'co-hyponyms')
+        return bool(use_synonyms), bool(use_hypernyms), bool(use_hyponyms), bool(use_siblings)
+
+    # Process each image: build a grid per image with rows=prompts, cols=len(variants)
     types_selected = args.sparse_encoding_type or ['original']
-    cols = len(types_selected)
+    variants: List[Tuple[str, dict]] = []
+    variants.append(('original', {'mode': 'original'}))
+    if 'sparse_residual' in types_selected:
+        if args.benchmark:
+            # Expand into multiple configs x atoms
+            for cfg_name in args.wn_configs:
+                flags = parse_wn_config_name(cfg_name)
+                for k in (args.atom_grid or [args.residual_atoms]):
+                    label = f'sparse_residual:{cfg_name}@{int(k)}'
+                    variants.append((
+                        label,
+                        {
+                            'mode': 'sparse_residual',
+                            'wn_cfg_name': cfg_name,
+                            'wn_flags': {
+                                'use_synonyms': flags[0],
+                                'use_hypernyms': flags[1],
+                                'use_hyponyms': flags[2],
+                                'use_siblings': flags[3],
+                            },
+                            'atoms': int(k),
+                        }
+                    ))
+        else:
+            # Single configuration driven by top-level args
+            variants.append((
+                'sparse_residual',
+                {
+                    'mode': 'sparse_residual',
+                    'wn_cfg_name': 'args',
+                    'wn_flags': {
+                        'use_synonyms': bool(args.wn_use_synonyms),
+                        'use_hypernyms': bool(args.wn_use_hypernyms),
+                        'use_hyponyms': bool(args.wn_use_hyponyms),
+                        'use_siblings': bool(args.wn_use_siblings),
+                    },
+                    'atoms': int(args.residual_atoms),
+                }
+            ))
+    cols = len(variants)
 
     for pth in paths:
         try:
@@ -365,11 +421,12 @@ def main():
 
             maps_for_row: List[Tuple[str, torch.Tensor]] = []
 
-            for c, tname in enumerate(types_selected):
-                if tname == 'original':
+            for c, (vlabel, vcfg) in enumerate(variants):
+                mode = vcfg.get('mode', 'original')
+                if mode == 'original':
                     emb_1x = original_1x
-                elif tname == 'sparse_residual':
-                    # Build dictionary from other prompts + external neighbors (independent of 'word_list' selection)
+                elif mode == 'sparse_residual':
+                    # Build dictionary from other prompts + neighbors
                     parts = []
                     if r > 0:
                         parts.append(text_emb_all[:r])
@@ -377,7 +434,22 @@ def main():
                         parts.append(text_emb_all[r+1:])
                     tokens = re.findall(r'[a-z]+', prompt.lower())
                     key = tokens[-1] if len(tokens) > 0 else ''
-                    wl = external_neighbors_getter(key) if key else []
+                    # Determine neighbors based on benchmark config vs. global args/loader
+                    if key:
+                        if args.benchmark and vcfg.get('wn_cfg_name') is not None:
+                            f = vcfg.get('wn_flags', {})
+                            wl = wordnet_neighbors_configured(
+                                key,
+                                use_synonyms=bool(f.get('use_synonyms', False)),
+                                use_hypernyms=bool(f.get('use_hypernyms', False)),
+                                use_hyponyms=bool(f.get('use_hyponyms', False)),
+                                use_siblings=bool(f.get('use_siblings', True)),
+                                limit_per_relation=8
+                            )
+                        else:
+                            wl = external_neighbors_getter(key)
+                    else:
+                        wl = []
                     if len(wl) > 0:
                         ext_emb = build_wordlist_neighbors_embedding(tokenizer, model, wl, device)
                         if ext_emb is not None and ext_emb.numel() > 0:
@@ -388,12 +460,13 @@ def main():
                         sim = (D @ original_1x.t()).squeeze(-1).abs()
                         keep = sim < 0.999
                         D = D[keep]
-                    emb_1x = omp_sparse_residual(original_1x, D, max_atoms=args.residual_atoms)
+                    max_atoms = int(vcfg.get('atoms', args.residual_atoms))
+                    emb_1x = omp_sparse_residual(original_1x, D, max_atoms=max_atoms)
                 else:
                     emb_1x = original_1x
 
                 heat = compute_map_for_embedding(model, img_t, emb_1x)  # [H, W]
-                maps_for_row.append((tname, heat))
+                maps_for_row.append((vlabel, heat))
 
             # Plot the row
             for c, (label, heat) in enumerate(maps_for_row):
