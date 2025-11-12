@@ -80,7 +80,7 @@ def overlay(ax, base_img: Image.Image, heat_01: torch.Tensor, title: str, alpha:
     base_resized = base_img.resize((W, H), Image.BICUBIC).convert("RGB")
     ax.imshow(base_resized)
     ax.imshow(heat_01.detach().cpu().numpy(), cmap='jet', alpha=alpha, vmin=0.0, vmax=1.0)
-    ax.set_title(title, fontsize=10)
+    ax.set_title(title, fontsize=9, pad=10)
     ax.axis('off')
 
 
@@ -279,6 +279,8 @@ def main():
                         help='WordNet configs to test when --benchmark=1. '
                              'Choices include: siblings, siblings+hyponyms, synonyms, hypernyms, hyponyms, '
                              'siblings+synonyms.')
+    parser.add_argument('--max_images', type=int, default=0,
+                        help='Cap total images processed. 0 means auto (per-class or 2*num_per_class for flat).')
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -348,9 +350,13 @@ def main():
         paths += list_images(dog_dir, limit=args.num_per_class)
     else:
         # Fallback: flat directory listing
-        paths += list_images(args.dataset_root, limit=max(1, args.num_per_class * 2))
+        flat_limit = args.max_images if args.max_images > 0 else max(1, args.num_per_class * 2)
+        paths += list_images(args.dataset_root, limit=flat_limit)
     if len(paths) == 0:
         raise RuntimeError(f'No images found under {args.dataset_root}')
+    # If a hard cap is set, enforce it
+    if args.max_images > 0:
+        paths = paths[:args.max_images]
 
     # Helpers to construct benchmark variants
     def parse_wn_config_name(name: str) -> Tuple[bool, bool, bool, bool]:
@@ -412,7 +418,7 @@ def main():
 
         img_t = safe_preprocess(base_img, image_size=args.image_size).unsqueeze(0).to(device)
 
-        fig, axes = plt.subplots(nrows=len(args.prompts), ncols=cols, figsize=(3 * cols, 3 * len(args.prompts)))
+        fig, axes = plt.subplots(nrows=len(args.prompts), ncols=cols, figsize=(3.5 * cols, 3.5 * len(args.prompts)))
         if len(args.prompts) == 1:
             axes = [axes]
 
@@ -483,7 +489,7 @@ def main():
         plt.tight_layout()
         # Leave more gaps to avoid overlapping titles/labels
         try:
-            plt.subplots_adjust(hspace=0.4, wspace=0.7)
+            plt.subplots_adjust(hspace=1.0, wspace=1)
         except Exception:
             pass
         base = os.path.splitext(os.path.basename(pth))[0]
