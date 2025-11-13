@@ -340,10 +340,10 @@ def main():
                         help='Enable benchmark grid over multiple WordNet configs and atom counts (0/1).')
     parser.add_argument('--atom_grid', type=int, nargs='*', default=[8, 16, 24, 32],
                         help='Atom counts to test when --benchmark=1.')
-    parser.add_argument('--wn_configs', type=str, nargs='*', default=['siblings', 'siblings+hyponyms', 'siblings_clipband', 'siblings_clipband_diverse'],
+    parser.add_argument('--wn_configs', type=str, nargs='*', default=['none', 'siblings', 'siblings+hyponyms', 'siblings_clipband', 'siblings_clipband_diverse'],
                         help='WordNet configs to test when --benchmark=1. '
                              'Choices include: siblings, siblings+hyponyms, synonyms, hypernyms, hyponyms, '
-                             'siblings+synonyms, siblings_clipband, siblings_clipband_diverse.')
+                             'siblings+synonyms, siblings_clipband, siblings_clipband_diverse, none (prompts only).')
     parser.add_argument('--max_images', type=int, default=0,
                         help='Cap total images processed. 0 means auto (per-class or 2*num_per_class for flat).')
     parser.add_argument('--neighbor_min_sim', type=float, default=-1.0,
@@ -434,6 +434,8 @@ def main():
     # Helpers to construct benchmark variants
     def parse_wn_config_name(name: str) -> Tuple[bool, bool, bool, bool]:
         n = (name or '').strip().lower()
+        if n in {'none', 'prompts_only', 'others_only', 'no_neighbors'}:
+            return False, False, False, False
         use_synonyms = ('synonym' in n)
         use_hypernyms = ('hypernym' in n)
         use_hyponyms = ('hyponym' in n)
@@ -452,6 +454,9 @@ def main():
         else:
             clip_filter = None
         return clip_filter
+    def variant_disables_neighbors(name: str) -> bool:
+        n = (name or '').strip().lower()
+        return n in {'none', 'prompts_only', 'others_only', 'no_neighbors'}
 
     # Process each image: build a grid per image with rows=prompts, cols=len(variants)
     types_selected = args.sparse_encoding_type or ['original']
@@ -477,6 +482,7 @@ def main():
                                 'use_siblings': flags[3],
                             },
                             'clip_filter': clip_filter,
+                            'disable_neighbors': variant_disables_neighbors(cfg_name),
                             'atoms': int(k),
                         }
                     ))
@@ -535,21 +541,24 @@ def main():
                     tokens = re.findall(r'[a-z]+', prompt.lower())
                     key = tokens[-1] if len(tokens) > 0 else ''
                     # Determine neighbors based on benchmark config vs. global args/loader
-                    if key:
-                        if args.benchmark and vcfg.get('wn_cfg_name') is not None:
-                            f = vcfg.get('wn_flags', {})
-                            wl = wordnet_neighbors_configured(
-                                key,
-                                use_synonyms=bool(f.get('use_synonyms', False)),
-                                use_hypernyms=bool(f.get('use_hypernyms', False)),
-                                use_hyponyms=bool(f.get('use_hyponyms', False)),
-                                use_siblings=bool(f.get('use_siblings', True)),
-                                limit_per_relation=8
-                            )
-                        else:
-                            wl = external_neighbors_getter(key)
-                    else:
+                    if vcfg.get('disable_neighbors', False):
                         wl = []
+                    else:
+                        if key:
+                            if args.benchmark and vcfg.get('wn_cfg_name') is not None:
+                                f = vcfg.get('wn_flags', {})
+                                wl = wordnet_neighbors_configured(
+                                    key,
+                                    use_synonyms=bool(f.get('use_synonyms', False)),
+                                    use_hypernyms=bool(f.get('use_hypernyms', False)),
+                                    use_hyponyms=bool(f.get('use_hyponyms', False)),
+                                    use_siblings=bool(f.get('use_siblings', True)),
+                                    limit_per_relation=8
+                                )
+                            else:
+                                wl = external_neighbors_getter(key)
+                        else:
+                            wl = []
                     # Optional CLIP-band filtering and top-k selection for disentanglement
                     clip_filter = vcfg.get('clip_filter', None)
                     ext_emb = None
