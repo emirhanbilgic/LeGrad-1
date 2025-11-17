@@ -77,7 +77,9 @@ def build_wnid_to_label_map(class_index: Dict[str, List[str]]) -> Dict[str, str]
     """
     wnid_to_label: Dict[str, str] = {}
     for _, (wnid, label_str) in class_index.items():
-        primary = label_str.split(",")[0].strip()
+        # Use the primary label (before first comma) and replace underscores with spaces
+        # so prompts use natural phrases like "great white shark" instead of "great_white_shark".
+        primary = label_str.split(",")[0].replace("_", " ").strip()
         wnid_to_label[wnid] = primary.lower()
     return wnid_to_label
 
