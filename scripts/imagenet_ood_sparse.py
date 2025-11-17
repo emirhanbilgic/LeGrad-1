@@ -75,25 +75,31 @@ class FlatImageDataset(Dataset):
 
 
 @torch.no_grad()
-def collect_maxlogit_scores(
+def collect_scores(
     model,
     dataloader: DataLoader,
     text_embs: torch.Tensor,
     sparse_text_embs: torch.Tensor,
     device: torch.device,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    energy_T: float = 1.0,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    For each image, compute:
-        score_std    = max_j logits_std
-        score_sparse = max_j logits_sparse
-    Returns two 1D tensors of shape [N].
+    For each image, compute two types of ID scores for both standard and sparse embeddings:
+        - max-logit score:   max_j logits
+        - energy-based score: T * logsumexp(logits / T)
+
+    Returns four 1D tensors of shape [N]:
+        (max_std, max_sparse, energy_std, energy_sparse)
+    where higher scores indicate more "ID-like".
     """
     model.eval()
     text_embs = text_embs.to(device)
     sparse_text_embs = sparse_text_embs.to(device)
 
-    scores_std: List[torch.Tensor] = []
-    scores_sparse: List[torch.Tensor] = []
+    scores_max_std: List[torch.Tensor] = []
+    scores_max_sparse: List[torch.Tensor] = []
+    scores_energy_std: List[torch.Tensor] = []
+    scores_energy_sparse: List[torch.Tensor] = []
 
     for images, _ in tqdm(dataloader, desc="Scoring", leave=False):
         images = images.to(device, non_blocking=True)
@@ -108,10 +114,29 @@ def collect_maxlogit_scores(
             logits_std = scale * logits_std
             logits_sparse = scale * logits_sparse
 
-        scores_std.append(logits_std.max(dim=-1).values.cpu())
-        scores_sparse.append(logits_sparse.max(dim=-1).values.cpu())
+        # Max-logit scores
+        scores_max_std.append(logits_std.max(dim=-1).values.cpu())
+        scores_max_sparse.append(logits_sparse.max(dim=-1).values.cpu())
 
-    return torch.cat(scores_std, dim=0), torch.cat(scores_sparse, dim=0)
+        # Energy-based scores: higher = more ID-like
+        if energy_T is not None and energy_T > 0:
+            T = float(energy_T)
+            energy_score_std = T * torch.logsumexp(logits_std / T, dim=-1)
+            energy_score_sparse = T * torch.logsumexp(logits_sparse / T, dim=-1)
+        else:
+            # Fallback to T=1
+            energy_score_std = torch.logsumexp(logits_std, dim=-1)
+            energy_score_sparse = torch.logsumexp(logits_sparse, dim=-1)
+
+        scores_energy_std.append(energy_score_std.cpu())
+        scores_energy_sparse.append(energy_score_sparse.cpu())
+
+    return (
+        torch.cat(scores_max_std, dim=0),
+        torch.cat(scores_max_sparse, dim=0),
+        torch.cat(scores_energy_std, dim=0),
+        torch.cat(scores_energy_sparse, dim=0),
+    )
 
 
 def _binary_auroc(pos_scores: torch.Tensor, neg_scores: torch.Tensor) -> float:
@@ -273,6 +298,12 @@ def parse_args() -> argparse.Namespace:
         help="Number of atoms for OMP residual.",
     )
     parser.add_argument(
+        "--energy_T",
+        type=float,
+        default=1.0,
+        help="Temperature T for energy-based scoring: score = T * logsumexp(logits / T).",
+    )
+    parser.add_argument(
         "--max_dict_cos_sim",
         type=float,
         default=0.9,
@@ -358,25 +389,30 @@ def main():
 
     # 4) Collect ID and OOD scores
     print("[scores] Collecting ID scores ...")
-    id_scores_std, id_scores_sparse = collect_maxlogit_scores(
+    id_scores_std, id_scores_sparse, id_energy_std, id_energy_sparse = collect_scores(
         model=model,
         dataloader=id_loader,
         text_embs=text_embs,
         sparse_text_embs=sparse_text_embs,
         device=device,
+        energy_T=args.energy_T,
     )
 
     print("[scores] Collecting OOD scores ...")
-    ood_scores_std, ood_scores_sparse = collect_maxlogit_scores(
+    ood_scores_std, ood_scores_sparse, ood_energy_std, ood_energy_sparse = collect_scores(
         model=model,
         dataloader=ood_loader,
         text_embs=text_embs,
         sparse_text_embs=sparse_text_embs,
         device=device,
+        energy_T=args.energy_T,
     )
 
     # 5) Compute OOD metrics
     print("\n=== OOD Detection Metrics (ID = ImageNet, OOD = imagenetood) ===")
+
+    # ----- Max-logit based scoring -----
+    print("\n[Max-logit scoring]")
 
     # Standard CLIP
     auroc_std = _binary_auroc(id_scores_std, ood_scores_std)
@@ -401,6 +437,33 @@ def main():
     print(f"  FPR@95%TPR     : {fpr95_sparse:.4f}")
     print(f"  AUPR (ID pos)  : {aupr_in_sparse:.4f}")
     print(f"  AUPR (OOD pos) : {aupr_out_sparse:.4f}")
+
+    # ----- Energy-based scoring -----
+    print("\n[Energy-based scoring]")
+
+    # Standard CLIP (energy)
+    auroc_std_e = _binary_auroc(id_energy_std, ood_energy_std)
+    fpr95_std_e = _fpr_at_tpr(id_energy_std, ood_energy_std, target_tpr=0.95)
+    aupr_in_std_e = _binary_aupr(id_energy_std, ood_energy_std)
+    aupr_out_std_e = _binary_aupr(ood_energy_std, id_energy_std)
+
+    # Sparse CLIP (energy)
+    auroc_sparse_e = _binary_auroc(id_energy_sparse, ood_energy_sparse)
+    fpr95_sparse_e = _fpr_at_tpr(id_energy_sparse, ood_energy_sparse, target_tpr=0.95)
+    aupr_in_sparse_e = _binary_aupr(id_energy_sparse, ood_energy_sparse)
+    aupr_out_sparse_e = _binary_aupr(ood_energy_sparse, id_energy_sparse)
+
+    print("[Standard CLIP - Energy]")
+    print(f"  AUROC          : {auroc_std_e:.4f}")
+    print(f"  FPR@95%TPR     : {fpr95_std_e:.4f}")
+    print(f"  AUPR (ID pos)  : {aupr_in_std_e:.4f}")
+    print(f"  AUPR (OOD pos) : {aupr_out_std_e:.4f}")
+
+    print("\n[Sparse (OMP residual) - Energy]")
+    print(f"  AUROC          : {auroc_sparse_e:.4f}")
+    print(f"  FPR@95%TPR     : {fpr95_sparse_e:.4f}")
+    print(f"  AUPR (ID pos)  : {aupr_in_sparse_e:.4f}")
+    print(f"  AUPR (OOD pos) : {aupr_out_sparse_e:.4f}")
 
 
 if __name__ == "__main__":
