@@ -171,6 +171,7 @@ def compute_text_embeddings(
 def precompute_sparse_text_embeddings(
     text_embs: torch.Tensor,
     atoms: int,
+    max_cos_sim: float | None = 0.9,
 ) -> torch.Tensor:
     """
     For each class embedding, compute the sparse residual encoding using
@@ -201,6 +202,15 @@ def precompute_sparse_text_embeddings(
         D = torch.cat(parts, dim=0) if len(parts) > 0 else text_embs.new_zeros((0, d))
         if D.numel() > 0:
             D = F.normalize(D, dim=-1)
+            # Optionally remove atoms that are almost identical to x (too high cosine similarity)
+            if max_cos_sim is not None and float(max_cos_sim) < 1.0:
+                sim = (D @ x.t()).squeeze(-1).abs()  # [K]
+                keep = sim < float(max_cos_sim)
+                D = D[keep]
+        # If the dictionary becomes empty after filtering, fall back to original embedding
+        if D.numel() == 0:
+            sparse_embs[c] = x
+            continue
         sparse = omp_sparse_residual(x, D, max_atoms=atoms)
         sparse_embs[c] = sparse.to(device)
     return sparse_embs
@@ -336,6 +346,14 @@ def parse_args() -> argparse.Namespace:
         help="Number of atoms for OMP sparse residual (dictionary = other 999 class prompts).",
     )
     parser.add_argument(
+        "--max_dict_cos_sim",
+        type=float,
+        default=0.9,
+        help="Maximum allowed cosine similarity between a class embedding and dictionary atoms. "
+             "Atoms with abs(cos) >= this are removed from the dictionary before OMP. "
+             "Set >=1.0 or <=0 to disable.",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cuda",
@@ -404,6 +422,7 @@ def main():
     sparse_text_embs = precompute_sparse_text_embeddings(
         text_embs=text_embs,
         atoms=args.atoms,
+        max_cos_sim=args.max_dict_cos_sim if 0.0 < args.max_dict_cos_sim < 1.0 else None,
     )
 
     # 5) Evaluate zero-shot accuracy
