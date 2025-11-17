@@ -377,11 +377,6 @@ def main():
 
     # 5) Compute OOD metrics
     print("\n=== OOD Detection Metrics (ID = ImageNet, OOD = imagenetood) ===")
-    for name, id_s, ood_s in [
-        ("Standard CLIP", id_scores_std, id_scores_sparse * 0 + ood_scores_std),  # placeholder
-    ]:
-        # We'll handle standard and sparse separately below; this placeholder loop is unused.
-        pass
 
     # Standard CLIP
     auroc_std = _binary_auroc(id_scores_std, ood_scores_std)
