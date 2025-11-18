@@ -332,8 +332,8 @@ def main():
     parser.add_argument('--prompts', type=str, nargs='*', default=['a photo of a dog.', 'a photo of a cat.'])
     parser.add_argument('--sparse_encoding_type', type=str, nargs='*',
                         default=['original'],
-                        choices=['original', 'sparse_residual'],
-                        help='Select one or more types; default tries original only.')
+                        choices=['original', 'sparse_residual', 'sparse_residual_context'],
+                        help='Select one or more types. sparse_residual uses word-level neighbors. sparse_residual_context uses prompt-level neighbors.')
     parser.add_argument('--wordlist_source', type=str, default='json',
                         choices=['json', 'url', 'wordnet'],
                         help='Source for neighbor words: local JSON, URL JSON, or WordNet.')
@@ -476,22 +476,35 @@ def main():
         n = (name or '').strip().lower()
         return n in {'none', 'prompts_only', 'others_only', 'no_neighbors'}
 
+    def inject_context(prompt: str, key: str, neighbor: str) -> str:
+        # Case insensitive replace of the LAST occurrence of key to preserve prompt structure
+        lprompt = prompt.lower()
+        lkey = key.lower()
+        idx = lprompt.rfind(lkey)
+        if idx == -1: 
+            return neighbor # fallback if key not found
+        return prompt[:idx] + neighbor + prompt[idx+len(key):]
+
     # Process each image: build a grid per image with rows=prompts, cols=len(variants)
     types_selected = args.sparse_encoding_type or ['original']
     variants: List[Tuple[str, dict]] = []
     variants.append(('original', {'mode': 'original'}))
-    if 'sparse_residual' in types_selected:
+    
+    for t in types_selected:
+        if t == 'original': continue
+        mode_name = t # 'sparse_residual' or 'sparse_residual_context'
+        
         if args.benchmark:
             # Expand into multiple configs x atoms
             for cfg_name in args.wn_configs:
                 flags = parse_wn_config_name(cfg_name)
                 clip_filter = parse_variant_filters(cfg_name)
                 for k in (args.atom_grid or [args.residual_atoms]):
-                    label = f'sparse_residual:{cfg_name}@{int(k)}'
+                    label = f'{mode_name}:{cfg_name}@{int(k)}'
                     variants.append((
                         label,
                         {
-                            'mode': 'sparse_residual',
+                            'mode': mode_name,
                             'wn_cfg_name': cfg_name,
                             'wn_flags': {
                                 'use_synonyms': flags[0],
@@ -507,9 +520,9 @@ def main():
         else:
             # Single configuration driven by top-level args
             variants.append((
-                'sparse_residual',
+                mode_name,
                 {
-                    'mode': 'sparse_residual',
+                    'mode': mode_name,
                     'wn_cfg_name': 'args',
                     'wn_flags': {
                         'use_synonyms': bool(args.wn_use_synonyms),
@@ -549,7 +562,8 @@ def main():
                 mode = vcfg.get('mode', 'original')
                 if mode == 'original':
                     emb_1x = original_1x
-                elif mode == 'sparse_residual':
+                elif mode in ['sparse_residual', 'sparse_residual_context']:
+                    use_context = (mode == 'sparse_residual_context')
                     # Build dictionary from other prompts + neighbors
                     parts = []
                     d_words = []
@@ -581,6 +595,11 @@ def main():
                                 wl = external_neighbors_getter(key)
                         else:
                             wl = []
+                    
+                    # Inject context if requested
+                    if use_context and len(wl) > 0 and key:
+                        wl = [inject_context(prompt, key, w) for w in wl]
+
                     # Optional CLIP-band filtering and top-k selection for disentanglement
                     clip_filter = vcfg.get('clip_filter', None)
                     ext_emb = None
