@@ -624,6 +624,14 @@ def main():
                     if D.numel() > 0:
                         D = F.normalize(D, dim=-1)
                         sim = (D @ original_1x.t()).squeeze(-1).abs()
+                        # Log ALL atoms and their similarities (user request)
+                        if sim.numel() > 0:
+                            print(f"[dict-all] prompt='{prompt}' dictionary size={sim.numel()}")
+                            sorted_idxs = torch.argsort(sim, descending=True)
+                            for idx in sorted_idxs.tolist():
+                                w_label = d_words[idx] if idx < len(d_words) else "unknown"
+                                print(f"  - '{w_label}': {sim[idx].item():.4f}")
+
                         # Optionally drop atoms that are too close to the target prompt in cosine similarity
                         if args.dict_self_sim_max is not None and float(args.dict_self_sim_max) < 1.0:
                             keep = sim < float(args.dict_self_sim_max)
@@ -637,15 +645,12 @@ def main():
                                     print(f"  - '{w_label}': {sim[idx].item():.4f}")
 
                             D = D[keep]
+                            # Filter d_words to match D if we are keeping them in sync (though only needed for logging really)
+                            d_words = [d_words[i] for i in range(len(d_words)) if keep[i]]
                         
                         # Log remaining atoms and their similarities (top 10 highest)
                         if D.numel() > 0:
-                            # Recompute sim for remaining if filtering happened, or just slice sim if needed.
-                            # Easier to recompute or track indices. 
-                            # Let's just print summary of top similarities for debugging
-                            current_sim = (D @ original_1x.t()).squeeze(-1).abs()
-                            top_vals, top_idxs = torch.topk(current_sim, min(10, len(current_sim)))
-                            # Need to map back to original words if filtering happened.
+                            # Recompute sim for remaining if filtering happened
                             pass
 
                     max_atoms = int(vcfg.get('atoms', args.residual_atoms))
