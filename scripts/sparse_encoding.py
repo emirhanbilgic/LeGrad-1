@@ -552,11 +552,14 @@ def main():
                 elif mode == 'sparse_residual':
                     # Build dictionary from other prompts + neighbors
                     parts = []
+                    d_words = []
                     if args.dict_include_prompts:
                         if r > 0:
                             parts.append(text_emb_all[:r])
+                            d_words.extend(args.prompts[:r])
                         if r + 1 < text_emb_all.shape[0]:
                             parts.append(text_emb_all[r+1:])
+                            d_words.extend(args.prompts[r+1:])
                     tokens = re.findall(r'[a-z]+', prompt.lower())
                     key = tokens[-1] if len(tokens) > 0 else ''
                     # Determine neighbors based on benchmark config vs. global args/loader
@@ -616,6 +619,7 @@ def main():
                     if len(wl) > 0:
                         if ext_emb is not None and ext_emb.numel() > 0:
                             parts.append(ext_emb)
+                            d_words.extend(wl)
                     D = torch.cat(parts, dim=0) if len(parts) > 0 else original_1x.new_zeros((0, original_1x.shape[-1]))
                     if D.numel() > 0:
                         D = F.normalize(D, dim=-1)
@@ -623,7 +627,27 @@ def main():
                         # Optionally drop atoms that are too close to the target prompt in cosine similarity
                         if args.dict_self_sim_max is not None and float(args.dict_self_sim_max) < 1.0:
                             keep = sim < float(args.dict_self_sim_max)
+                            
+                            # Log dropped atoms
+                            dropped_indices = torch.nonzero(~keep, as_tuple=False).squeeze(-1).tolist()
+                            if dropped_indices:
+                                print(f"[dict-filter] prompt='{prompt}' dropped {len(dropped_indices)} atoms with sim >= {args.dict_self_sim_max}:")
+                                for idx in dropped_indices:
+                                    w_label = d_words[idx] if idx < len(d_words) else "unknown"
+                                    print(f"  - '{w_label}': {sim[idx].item():.4f}")
+
                             D = D[keep]
+                        
+                        # Log remaining atoms and their similarities (top 10 highest)
+                        if D.numel() > 0:
+                            # Recompute sim for remaining if filtering happened, or just slice sim if needed.
+                            # Easier to recompute or track indices. 
+                            # Let's just print summary of top similarities for debugging
+                            current_sim = (D @ original_1x.t()).squeeze(-1).abs()
+                            top_vals, top_idxs = torch.topk(current_sim, min(10, len(current_sim)))
+                            # Need to map back to original words if filtering happened.
+                            pass
+
                     max_atoms = int(vcfg.get('atoms', args.residual_atoms))
                     emb_1x = omp_sparse_residual(original_1x, D, max_atoms=max_atoms)
                 else:
