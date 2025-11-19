@@ -553,9 +553,20 @@ def main():
     # If args.split is provided and exists as a subdir, use it. Otherwise treat root as the dataset.
     split_dir = os.path.join(args.imagenet_root, args.split)
     if not os.path.isdir(split_dir):
-        raise RuntimeError(
-            f"Expected ImageNet {args.split} directory at {split_dir} with 1000 class subfolders."
-        )
+        # Check if the user intended to use the root directory (e.g. for ImageNet-R where classes are at root)
+        if os.path.isdir(args.imagenet_root):
+            # Check if root has subdirectories
+            subdirs = [d for d in os.listdir(args.imagenet_root) if os.path.isdir(os.path.join(args.imagenet_root, d))]
+            if len(subdirs) > 0:
+                print(f"[imagenet] Warning: Split folder '{args.split}' not found in {args.imagenet_root}.")
+                print(f"[imagenet] Found {len(subdirs)} subfolders in root. Using {args.imagenet_root} as dataset root.")
+                split_dir = args.imagenet_root
+            else:
+                raise RuntimeError(f"Expected dataset at {split_dir} or {args.imagenet_root}, but found no class folders.")
+        else:
+            raise RuntimeError(
+                f"Expected ImageNet directory at {split_dir}."
+            )
 
     # Create CLIP model & preprocessing
     model, _, preprocess = open_clip.create_model_and_transforms(
