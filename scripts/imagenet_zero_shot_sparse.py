@@ -35,7 +35,7 @@ import open_clip
 
 
 IMAGENET_CLASS_INDEX_URL = (
-    "https://raw.githubusercontent.com/pytorch/vision/main/torchvision/datasets/imagenet_class_index.json"
+    "https://s3.amazonaws.com/deep-learning-models/image-models/imagenet_class_index.json"
 )
 
 
