@@ -434,8 +434,7 @@ def parse_args() -> argparse.Namespace:
         "--split",
         type=str,
         default="val",
-        choices=["train", "val"],
-        help="Which split to evaluate (default: val).",
+        help="Which split to evaluate (default: val). Folder name inside imagenet_root.",
     )
     parser.add_argument(
         "--class_index_path",
