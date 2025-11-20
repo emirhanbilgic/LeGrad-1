@@ -38,6 +38,8 @@ class LeWrapper(nn.Module):
         print('Activating necessary hooks and gradients ....')
         if isinstance(self.visual, VisionTransformer):
             # --- Activate dynamic image size ---
+            if not hasattr(self.visual, 'original_pos_embed'):
+                self.visual.original_pos_embed = self.visual.positional_embedding.clone()
             self.visual.forward = types.MethodType(vit_dynamic_size_forward, self.visual)
             # Get patch size
             self.patch_size = self.visual.patch_size[0]
@@ -158,7 +160,10 @@ class LeWrapper(nn.Module):
             image_features_list.append(intermediate_feat)
 
         num_tokens = blocks_list[-1].feat_post_mlp.shape[0] - 1
-        w = h = int(math.sqrt(num_tokens))
+        if hasattr(self.visual, 'last_grid_size'):
+            w, h = self.visual.last_grid_size
+        else:
+            w = h = int(math.sqrt(num_tokens))
 
         # ----- Get explainability map
         accum_expl_map = 0

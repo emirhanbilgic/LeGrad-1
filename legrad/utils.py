@@ -436,6 +436,7 @@ def hooked_attentional_pooler_timm_forward(self, x):
 def vit_dynamic_size_forward(self, x: torch.Tensor):
     x = self.conv1(x)  # shape = [*, width, grid, grid]
     grid_h, grid_w = x.shape[2:]
+    self.last_grid_size = (grid_h, grid_w)
     x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
     x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
 
@@ -443,7 +444,8 @@ def vit_dynamic_size_forward(self, x: torch.Tensor):
     x = torch.cat([_expand_token(self.class_embedding, x.shape[0]).to(x.dtype), x], dim=1)
     # shape = [*, grid ** 2 + 1, width]
     if x.shape[1] != self.positional_embedding.shape[1]:
-        self.positional_embedding.data = resample_abs_pos_embed(self.positional_embedding.unsqueeze(0),
+        source_emb = getattr(self, 'original_pos_embed', self.positional_embedding)
+        self.positional_embedding.data = resample_abs_pos_embed(source_emb.unsqueeze(0),
                                          new_size=[grid_h, grid_w],
                                          # old_size=list(self.grid_size),
                                          num_prefix_tokens=1,
